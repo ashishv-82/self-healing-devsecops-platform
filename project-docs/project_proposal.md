@@ -44,6 +44,40 @@ flowchart LR
 
 ## 3. Architecture & Flow
 
+### Production Architecture (AWS)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  AWS CLOUD                                                          │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  VPC (Virtual Private Cloud)                                 │    │
+│  │                                                              │    │
+│  │   ┌──────────────────────────────────────────────────────┐  │    │
+│  │   │  ECS CLUSTER (Fargate)                                │  │    │
+│  │   │                                                       │  │    │
+│  │   │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │  │    │
+│  │   │  │ Astronomy   │  │ AI Agent    │  │ Observability│   │  │    │
+│  │   │  │ Shop        │  │ (FastAPI +  │  │ Stack       │   │  │    │
+│  │   │  │ (Frontend,  │  │  LangGraph) │  │ (Prometheus,│   │  │    │
+│  │   │  │  Cart, etc) │  │             │  │  CloudWatch,│   │  │    │
+│  │   │  │             │  │             │  │  Grafana)   │   │  │    │
+│  │   │  └─────────────┘  └─────────────┘  └─────────────┘   │  │    │
+│  │   │       ▲                  ▲               ▲           │  │    │
+│  │   └───────┼──────────────────┼───────────────┼───────────┘  │    │
+│  │           │                  │               │              │    │
+│  │   ┌───────┴──────────────────┴───────────────┴───────────┐  │    │
+│  │   │              ALB (Application Load Balancer)          │  │    │
+│  │   └───────────────────────┬───────────────────────────────┘  │    │
+│  └───────────────────────────┼──────────────────────────────────┘    │
+│                              │                                       │
+│  Supporting Services: ECR (images) │ S3 (logs) │ SSM (secrets)       │
+└──────────────────────────────┼───────────────────────────────────────┘
+                               │
+                               ▼
+                          Internet
+```
+
 ### Detailed System Flow
 
 ```mermaid
@@ -54,7 +88,7 @@ sequenceDiagram
     participant Alert as Alertmanager
     participant API as FastAPI Orchestrator
     participant LG as LangGraph Agents
-    participant Loki as Grafana Loki
+    participant CW as CloudWatch Logs
     participant GH as GitHub API
     participant ECS as AWS ECS
 
@@ -66,8 +100,8 @@ sequenceDiagram
     
     rect rgb(40, 40, 60)
         Note over LG: Multi-Agent Reasoning
-        LG->>Loki: Query Error Logs
-        Loki-->>LG: Error Patterns
+        LG->>CW: Query Error Logs
+        CW-->>LG: Error Patterns
         LG->>GH: Query Recent Changes
         GH-->>LG: Commit History
     end
@@ -102,6 +136,64 @@ stateDiagram-v2
     Escalate --> [*]: Human Notified
 ```
 
+### CI/CD & Self-Healing Loop
+
+The AI agent **doesn't deploy directly** — it creates **GitHub PRs**, which trigger the normal CI/CD pipeline. This ensures full audit trail and SOC2 compliance.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ SELF-HEALING LOOP                                                │
+│                                                                  │
+│  1. Alert fires ──────► Agent detects issue                     │
+│                              │                                   │
+│  2. Agent analyzes           │                                   │
+│     logs + commits           ▼                                   │
+│                         ┌─────────────┐                          │
+│  3. Agent decides       │   Decision  │                          │
+│     remediation type    └──────┬──────┘                          │
+│                                │                                  │
+│            ┌───────────────────┼───────────────────┐             │
+│            ▼                   ▼                   ▼             │
+│     ┌────────────┐      ┌────────────┐      ┌────────────┐       │
+│     │ Immediate  │      │  Create PR │      │  Escalate  │       │
+│     │ (API call) │      │ (Git-based)│      │  (Human)   │       │
+│     │ - Restart  │      │ - Revert   │      │ - Slack    │       │
+│     │ - Scale    │      │ - Config   │      │ - PagerDuty│       │
+│     └─────┬──────┘      └─────┬──────┘      └────────────┘       │
+│           │                   │                                   │
+│           │                   ▼                                   │
+│           │            ┌─────────────┐                           │
+│           │            │ GitHub      │                           │
+│           │            │ Actions     │                           │
+│           │            │ - Build     │                           │
+│           │            │ - Test      │                           │
+│           │            │ - Deploy    │                           │
+│           │            └──────┬──────┘                           │
+│           │                   │                                   │
+│           └───────────────────┴─────► New version deployed       │
+│                                              │                    │
+│  4. Agent verifies service is healthy ◄──────┘                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Remediation Types
+
+| Type | Action | Example | Audit Trail |
+|------|--------|---------|-------------|
+| **Immediate** | Direct AWS API | Restart container, scale replicas | CloudWatch logs |
+| **PR-based** | GitHub commit | Revert bad deploy, fix config | Full Git history |
+| **Escalate** | Notify human | Unknown issue, needs judgment | Slack/PagerDuty |
+
+#### GitHub Actions Workflows
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `terraform-apply.yml` | Push to `main` | Deploy infrastructure changes |
+| `docker-build.yml` | Push to `main` | Build & push agent/app images |
+| `ecs-deploy.yml` | Image pushed to ECR | Deploy new version to ECS |
+| `agent-pr.yml` | PR from AI agent | Auto-merge if tests pass |
+| `fis-experiment.yml` | Manual/scheduled | Trigger chaos experiments |
+
 ---
 
 ## 4. Feasibility Analysis
@@ -129,22 +221,25 @@ stateDiagram-v2
 
 **Phase 1: Foundation (Weeks 1-2)**
 - [ ] Terraform infrastructure (VPC, ECS, IAM)
+- [ ] GitHub Actions CI/CD pipelines (`terraform-apply`, `docker-build`, `ecs-deploy`)
 - [ ] Deploy Astronomy Shop baseline
-- [ ] Set up Prometheus + Loki + Grafana
+- [ ] Set up Prometheus + CloudWatch + Grafana
 
 **Phase 2: Detection (Weeks 3-4)**
-- [ ] Configure alerting rules
+- [ ] Configure Prometheus alerting rules
 - [ ] Build FastAPI webhook receiver
 - [ ] Implement basic AWS FIS experiments
+- [ ] Set up `fis-experiment.yml` workflow
 
 **Phase 3: AI Agent (Weeks 5-7)**
 - [ ] LangGraph agent skeleton
-- [ ] Loki log querying tool
-- [ ] GitHub API integration
-- [ ] ECS control plane actions
+- [ ] CloudWatch log querying tool
+- [ ] GitHub API integration (PR creation)
+- [ ] ECS control plane actions (restart, scale)
 
 **Phase 4: Closed-Loop (Weeks 8-9)**
 - [ ] End-to-end remediation testing
+- [ ] `agent-pr.yml` workflow for auto-merge
 - [ ] Dashboard as Code implementation
 - [ ] Documentation & demo recording
 
@@ -160,7 +255,7 @@ stateDiagram-v2
 | **Tool Interface** | MCP Server | Same | Standardized AI tool protocol |
 | **Chaos Engineering** | AWS FIS | Chaos Toolkit | Portable YAML tests, triggers FIS in prod |
 | **Metrics** | Prometheus | Prometheus (Docker) | Identical PromQL queries |
-| **Logs** | Grafana Loki | Loki (Docker) | Same LogQL, S3 backend in prod |
+| **Logs** | CloudWatch Logs | `docker logs` | Zero setup, free tier, automatic in ECS |
 | **Dashboards** | Grafana | Grafana (Docker) | DaC support, same JSON exports |
 | **Load Balancer** | ALB | — (not needed locally) | Single ALB with path routing in prod |
 | **Secrets** | SSM Parameter Store | Docker secrets / .env | Free tier, swap at deploy |
@@ -193,7 +288,7 @@ self-healing-devsecops-platform/
 │   │   ├── networking/              # VPC, subnets, security groups
 │   │   ├── ecs-cluster/             # ECS cluster, task definitions
 │   │   ├── iam/                     # Roles and policies
-│   │   └── observability/           # Prometheus, Loki, Grafana
+│   │   └── observability/           # Prometheus, CloudWatch, Grafana
 │   ├── environments/
 │   │   ├── dev/
 │   │   └── prod/
@@ -218,7 +313,7 @@ self-healing-devsecops-platform/
 │   │   │   ├── edges.py             # State transitions
 │   │   │   └── state.py             # State schema
 │   │   ├── tools/
-│   │   │   ├── loki_client.py       # Log querying
+│   │   │   ├── cloudwatch_client.py  # Log querying
 │   │   │   ├── github_client.py     # PR/commit operations
 │   │   │   └── ecs_client.py        # Service control
 │   │   └── mcp/
@@ -298,13 +393,6 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
 
-  loki:
-    image: grafana/loki:latest
-    ports:
-      - "3100:3100"
-    volumes:
-      - ./config/loki:/etc/loki
-
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -336,12 +424,11 @@ services:
       - "8000:8000"
     environment:
       - PROMETHEUS_URL=http://prometheus:9090
-      - LOKI_URL=http://loki:3100
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - LLM_API_KEY=${LLM_API_KEY}
+      - LOCAL_DEV=true
     depends_on:
       - prometheus
-      - loki
 
   # ============ CHAOS INJECTION ============
   pumba:
@@ -385,7 +472,7 @@ chaos run chaos/local/container-kill.yml
 | Component | Local Testability | Notes |
 |-----------|------------------|-------|
 | ✅ AI Agent Logic | 100% | Full LangGraph execution |
-| ✅ Loki Log Queries | 100% | Same LogQL as production |
+| ✅ Log Queries | 100% | `docker logs` locally, CloudWatch in prod |
 | ✅ Prometheus Alerts | 100% | Same PromQL rules |
 | ✅ Grafana Dashboards | 100% | Export JSON, import to AWS |
 | ✅ Container Restart Logic | 100% | Docker API is similar |
@@ -471,7 +558,7 @@ flowchart TB
         E[VPC Endpoints<br/>$7/mo]
         F[Single AZ dev]
         G[Scheduled scaling]
-        H[Loki on ECS<br/>S3 backend]
+        H[CloudWatch Logs<br/>Free tier]
     end
     
     A -.->|Replace with| E
@@ -542,7 +629,7 @@ jobs:
 | Component | Expensive Default | Budget Alternative |
 |-----------|------------------|-------------------|
 | **Prometheus** | Managed (AMP) ~$40/mo | Self-hosted on Fargate |
-| **Loki** | Grafana Cloud | Self-hosted + S3 backend |
+| **Logs** | CloudWatch (paid) | CloudWatch (free tier) |
 | **Grafana** | Grafana Cloud | Self-hosted (free tier OK for demo) |
 | **Log Retention** | 30 days | 3 days (enough for demos) |
 
@@ -672,7 +759,7 @@ terraform/
 1. **Initialize repository** with base Terraform structure
 2. **Set up AWS backend** (S3 + DynamoDB for Terraform state)
 3. **Deploy networking layer** (VPC, subnets, security groups)
-4. **Create development environment** with local Prometheus/Loki
+4. **Create development environment** with local Prometheus + Docker logs
 5. **Begin agent skeleton** with mock tools
 
 ---
