@@ -1,0 +1,73 @@
+name: Agent PR Auto-Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+
+jobs:
+  validate-and-merge:
+    # Only run for PRs created by the agent
+    if: startsWith(github.head_ref, 'agent/')
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          cd agent
+          pip install -r requirements.txt
+          pip install pytest
+      
+      - name: Run Tests
+        run: |
+          cd agent
+          PYTHONPATH=. pytest tests/ -v --tb=short
+      
+      - name: Validate Terraform
+        if: success()
+        run: |
+          cd terraform/environments/dev
+          terraform fmt -check -recursive || echo "Terraform formatting issues found"
+      
+      - name: Auto-Approve PR
+        if: success()
+        uses: hmarr/auto-approve-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Auto-Merge PR
+        if: success()
+        uses: pascalgn/automerge-action@v0.16.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_METHOD: squash
+          MERGE_COMMIT_MESSAGE: "pull-request-title"
+          MERGE_LABELS: ""
+          UPDATE_LABELS: ""
+      
+      - name: Comment on Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ **Agent PR Validation Failed**\n\nTests or validation failed. Please review the workflow run for details.\n\n_This PR requires manual review and merge._'
+            })

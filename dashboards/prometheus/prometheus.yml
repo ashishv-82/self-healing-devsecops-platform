@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'agent'
+    static_configs:
+      - targets: ['agent:8000']
+
+  - job_name: 'frontend'
+    static_configs:
+      - targets: ['frontend:8080']
+
+rule_files:
+  - "alerting-rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+             - alertmanager:9093
+
+
+  - job_name: 'agent'
+    static_configs:
+      - targets: ['agent:8000']

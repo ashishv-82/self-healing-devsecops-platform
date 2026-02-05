@@ -1,0 +1,41 @@
+name: "Sync Dashboards"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'dashboards/grafana/**'
+  workflow_dispatch:
+
+env:
+  GRAFANA_URL: ${{ secrets.GRAFANA_URL }} # e.g., https://g-xyz.grafana-workspace.ap-southeast-2.amazonaws.com
+  GRAFANA_TOKEN: ${{ secrets.GRAFANA_SERVICE_ACCOUNT_TOKEN }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Note: For self-hosted on ECS, we might mount volumes, but for production
+      # we usually push to the HTTP API. This assumes API access.
+      # If using self-hosted without external exposure, this might need
+      # to run on a self-hosted runner or use a helper container.
+      # For now, we will create a placeholder implementation confirming the interface.
+
+      - name: Validate Dashboard JSON
+        run: |
+          for file in dashboards/grafana/*.json; do
+            if [ -f "$file" ]; then
+              echo "Validating $file..."
+              jq empty "$file"
+            fi
+          done
+
+      - name: Push to Grafana (Placeholder)
+        if: env.GRAFANA_URL != ''
+        run: |
+          echo "Syncing dashboards to $GRAFANA_URL..."
+          # Real implementation would curl POST to /api/dashboards/db

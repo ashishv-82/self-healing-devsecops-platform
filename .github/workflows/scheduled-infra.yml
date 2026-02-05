@@ -1,0 +1,73 @@
+name: "Scheduled Cost Optimization"
+
+on:
+  schedule:
+    # 09:00 UTC = 20:00 AEDT (8 PM Sydney)
+    - cron: '0 9 * * *'
+    # 21:00 UTC = 08:00 AEDT (8 AM Sydney)
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'shutdown'
+        type: choice
+        options:
+        - shutdown
+        - startup
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+  CLUSTER_NAME: self-healing-devsecops-cluster-dev
+
+jobs:
+  scale_resources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Determine Scale Action
+        id: action
+        run: |
+          # If triggered by schedule, determine if it's morning or evening
+          # This logic assumes the cron triggers match the intent
+          # Ideally, we split into two jobs or pass input, but for simplicity:
+          
+          HOUR=$(date +%H)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+             echo "mode=${{ inputs.action }}" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" -eq "09" ]; then
+             echo "mode=shutdown" >> $GITHUB_OUTPUT
+          else
+             echo "mode=startup" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Scale ECS Services
+        run: |
+          MODE=${{ steps.action.outputs.mode }}
+          echo "Executing: $MODE"
+          
+          if [ "$MODE" == "shutdown" ]; then
+            COUNT=0
+            echo "Scaling down all services in $CLUSTER_NAME to 0..."
+          else
+            COUNT=1
+            echo "Scaling up all services in $CLUSTER_NAME to 1..."
+          fi
+          
+          # List all services and update desired count
+          SERVICES=$(aws ecs list-services --cluster $CLUSTER_NAME --query "serviceArns[]" --output text)
+          
+          for SERVICE in $SERVICES; do
+            echo "Updating $SERVICE to $COUNT"
+            aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE --desired-count $COUNT > /dev/null
+          done

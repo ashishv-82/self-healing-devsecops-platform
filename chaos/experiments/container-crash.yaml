@@ -1,0 +1,43 @@
+version: 1.0.0
+title: Container Crash Test
+description: "Terminate the frontend container to verify ECS auto-recovery and Alertmanager triggering."
+tags:
+  - reliability
+  - frontend
+  - crash
+
+steady-state-hypothesis:
+  title: "Service is available"
+  probes:
+    - type: probe
+      name: "frontend-responds-200"
+      tolerance: 200
+      provider:
+        type: http
+        url: "http://localhost:8080/"
+        timeout: 5
+
+method:
+  - type: action
+    name: "kill-frontend-container"
+    provider:
+      type: python
+      module: chaosaws.ecs.actions
+      func: stop_task
+      arguments:
+        cluster: "self-healing-devsecops-cluster-dev"
+        service: "frontend"
+        reason: "Chaos Experiment: Container Crash"
+    pauses:
+      after: 15
+
+rollbacks:
+  - type: action
+    name: "ensure-service-stable"
+    provider:
+      type: python
+      module: chaosaws.ecs.actions
+      func: start_task # Conceptual - ECS auto-starts, but this could be a forced verification
+      arguments:
+        cluster: "self-healing-devsecops-cluster-dev"
+        service: "frontend"

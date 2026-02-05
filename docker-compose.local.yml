@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # ============ OBSERVABILITY STACK ============
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dashboards/prometheus:/etc/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - devsecops-net
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./dashboards/prometheus/alertmanager.yml:/etc/alertmanager/config.yml
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+    networks:
+      - devsecops-net
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    volumes:
+      - ./dashboards/grafana:/etc/grafana/provisioning/dashboards
+    networks:
+      - devsecops-net
+
+  # ============ ASTRONOMY SHOP (SIMPLIFIED) ============
+  frontend:
+    image: ghcr.io/open-telemetry/demo:latest-frontend
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - PRODUCT_CATALOG_SERVICE_ADDR=productcatalog:3550
+      - CART_SERVICE_ADDR=cart:7070
+      - CURRENCY_SERVICE_ADDR=currency:7000
+    depends_on:
+      - productcatalog
+      - cart
+    networks:
+      - devsecops-net
+
+  productcatalog:
+    image: ghcr.io/open-telemetry/demo:latest-productcatalogservice
+    ports:
+      - "3550:3550"
+    networks:
+      - devsecops-net
+    
+  cart:
+    image: ghcr.io/open-telemetry/demo:latest-cartservice
+    ports:
+      - "7070:7070"
+    networks:
+      - devsecops-net
+
+  # ============ AI AGENT ============
+  agent:
+    build: 
+      context: ./agent
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LOCAL_DEV=true
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      # Feature Flags (set to false to disable)
+      - ENABLE_RESTART=true
+      - ENABLE_SCALE_UP=true
+      - ENABLE_REVERT=false
+    depends_on:
+      - prometheus
+      - localstack
+    volumes:
+      - ./agent/src:/app/src
+    networks:
+      - devsecops-net
+
+  # ============ AUXILIARY ============
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=ecs,ssm,cloudwatch,logs
+      - DEBUG=1
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - devsecops-net
+
+  pumba:
+    image: gaiaadm/pumba
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 1h kill --signal SIGKILL re2:.*frontend
+    deploy:
+      replicas: 0 # Don't start automatically
+    networks:
+      - devsecops-net
+
+networks:
+  devsecops-net:
+    driver: bridge
